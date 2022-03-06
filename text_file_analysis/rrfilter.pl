@@ -1,8 +1,14 @@
 #!/usr/bin/env perl
 my $SCRIPTNAME   = 'Record/Regex Filter';
-my $LAST_UPDATED = '2022-03-05';
+my $LAST_UPDATED = '2022-03-06';
 # Author: Michael Chu, https://github.com/michaelgchu/
 # See Usage() for purpose and call details
+# Credits: the pattern to identify a field and its preceding delimiter is taken
+# from Jeffrey E.F. Friedl's "Mastering Regular Expressions" (3rd ed, pg 271)
+# TODO:
+# - bug fix: identify & discard bad content, e.g. unescaped "s
+# - add ability to specify column Name
+# - add colour to the debug/verbose output
 use strict;
 use Getopt::Std;
 
@@ -11,16 +17,37 @@ sub usage() {
 $SCRIPTNAME ($LAST_UPDATED)
 Usage: $0 <options> pattern [file]
 
-Filters delimited data by applying the provided regular expression pattern on a
-specific column/field.
+Filters delimited data by applying the provided regular expression 'pattern'.
+It is like grep, except:
+- it will always print the header (line 1)
+- it works on "records" that can extend onto multiple lines of text, so you
+  can filter CSV's with fields containing embedded line breaks
+- it will only process a single source: either STDIN, or a named file
+- the pattern must always be provided as PRCE (since this is a Perl program)
 
-The header (line 1) is examined to determine the number of fields to expect for
-all remaining lines of the input. It attempts to construct a full record in
-memory before filtering, to allow for processing CSV's with fields containing
-embedded line breaks (all enclosed in double-quotes).
+Records must meet these rules, otherwise they will be discarded:
+- have the exact same number of fields as the header
+- each field must either
+  - contain no delimiter or double-quote characters
+  - start & end with double-quotes, and any double-quotes within these
+    enclosing characters are escaped by repeating them
+(Some bad content may prevent the tool from working properly.)
 
-You can provide a filename after the pattern, otherwise it willl read data from
-STDIN. It will not accept multiple files.
+As an example, consider the following text file and program call:
+
+   \$ cat -n good2_bad2.csv
+        1  Col1,Col2,Col3
+        2  first,second,third
+        3  A,"The ""cake"", is, a, lie",C
+        4  too,many,fields,in,this,line
+        5  This,"record has
+        6  a line break hehe","and that's ok!"
+        7  too,"few fields"
+   \$ $0 -c 2 'e\$' good2_bad2.csv
+   Col1,Col2,Col3
+   A,"The ""cake"", is, a, lie",C
+   This,"record has
+   a line break hehe","and that's ok!"
 
 OPTIONS
 -------
@@ -198,11 +225,15 @@ sub process_body() {
 			$mlr_start = $. + 1;
 			next;
 		}
-		if (count_fields($record) > $num_fields) {
+		my $count = count_fields($record);
+		if ($count > $num_fields) {
 			verboseprint("Dropping bad record from lines $mlr_start - $.");
 			$record = '';
 			$mlr_start = $. + 1;
 			$tally_bad++;
+		}
+		elsif ($be_debuggin) {
+			debugprint("Compiling at line $., field count = $count");
 		}
 	} # end while loop
 	if ($record) {
