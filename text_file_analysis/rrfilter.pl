@@ -1,14 +1,13 @@
 #!/usr/bin/env perl
 my $SCRIPTNAME   = 'Record/Regex Filter';
-my $LAST_UPDATED = '2022-03-06';
+my $LAST_UPDATED = '2022-03-11';
 # Author: Michael Chu, https://github.com/michaelgchu/
 # See Usage() for purpose and call details
 # Credits: the pattern to identify a field and its preceding delimiter is taken
 # from Jeffrey E.F. Friedl's "Mastering Regular Expressions" (3rd ed, pg 271)
 # TODO:
-# - bug fix: identify & discard bad content, e.g. unescaped "s
-# - add ability to specify column Name
-# - add colour to the debug/verbose output
+# - add colour to show the matching record bits, like grep can. Since this modifies the output, it must be an optional flag
+# - add colour to the debug/verbose output?
 use strict;
 use Getopt::Std;
 
@@ -18,47 +17,50 @@ $SCRIPTNAME ($LAST_UPDATED)
 Usage: $0 <options> pattern [file]
 
 Filters delimited data by applying the provided regular expression 'pattern'.
-It is like grep, except:
-- it will always print the header (line 1)
+It is like grep, with the following notable differences:
+- the data must have a header on line #1, which will always get printed
+- it can filter on a specific field
 - it works on "records" that can extend onto multiple lines of text, so you
   can filter CSV's with fields containing embedded line breaks
 - it will only process a single source: either STDIN, or a named file
 - the pattern must always be provided as PRCE (since this is a Perl program)
 
-Records must meet these rules, otherwise they will be discarded:
+Records must meet the following rules, otherwise they will be discarded:
 - have the exact same number of fields as the header
 - each field must either
   - contain no delimiter or double-quote characters
   - start & end with double-quotes, and any double-quotes within these
     enclosing characters are escaped by repeating them
-(Some bad content may prevent the tool from working properly.)
+Note: bad content may prevent the tool from working properly.
 
 As an example, consider the following text file and program call:
 
    \$ cat -n good2_bad2.csv
-        1  Col1,Col2,Col3
+        1  Col1,Col2,"Col3"
         2  first,second,third
-        3  A,"The ""cake"", is, a, lie",C
-        4  too,many,fields,in,this,line
-        5  This,"record has
-        6  a line break hehe","and that's ok!"
-        7  too,"few fields"
+	3  A,"The ""cake"", is, a, lie",C
+	4  too,many,fields,in,this,line
+	5  This,"record has a
+	6  line break-No joke","and that's ok!"
+	7  too,"few fields"
    \$ $0 -c 2 'e\$' good2_bad2.csv
-   Col1,Col2,Col3
+   Col1,Col2,"Col3"
    A,"The ""cake"", is, a, lie",C
-   This,"record has
-   a line break hehe","and that's ok!"
+   This,"record has a
+   line break-No joke","and that's ok!"
 
 OPTIONS
 -------
-    -c column#       The column # to filter on. Mandatory, unless -w is used
+    -c #             The column # to filter on
+    -C name          The column name to filter on
     -d delimiter     Default: comma  ,
-    -h               This help screen
+    -p pattern       Use this to provide a pattern that starts with a -
     -i               Apply case insensitivity regex switch via (?i)
     -m               Apply multiline regex switch          via (?m)
     -s               Apply dot-matches-all regex switch    via (?s)
+    -w               Apply pattern to Whole record, instead of a single field
+    -h               This help screen
     -v               Print verbose messages on STDERR
-    -w               Apply pattern to Whole record
     -D               Print debug messages on STDERR
 
 EOD
@@ -71,10 +73,10 @@ EOD
 my $delimiter = ',';
 # There's probably a better way to handle all these settings and stuff
 # Perhaps by returning & passing hashes? https://beginnersbook.com/2017/02/subroutines-and-functions-in-perl/
-my ($key_column, $num_fields, $key_pattern,
+my ($key_column, $key_column_name, $num_fields, $key_pattern,
     $whole_record, $be_verbose, $be_debuggin, $mode_modifiers,
     $content_pattern,
-    $ro_counting, $ro_test_record, $ro_selector, $ro_filter,
+    $ro_counting, $ro_test_record, $ro_selector, $ro_filter, $ro_bad_line,
     $tally_bad, $tally_filtered, $tally_excluded
     );
 
@@ -87,6 +89,8 @@ process_line1();		# read/analyze line 1
 build_regex_objects_2();	# build all remaining regex objects
 process_body();			# read/filter remaining input
 print_report();			# display tallies with -v
+exit 0 if ($tally_filtered);	# End with return code 0 on a successful run
+exit 1;				# otherwise provide return code 1
 
 # ==============================================================
 # Subroutines
@@ -95,12 +99,30 @@ print_report();			# display tallies with -v
 sub handle_commandline_args() {
 	# Process all the switches
 	my %opts;
-	getopts('c:d:himsvwD', \%opts) or usage();
+	getopts('c:C:d:p:himswvD', \%opts) or usage();
 	usage() if $opts{h};
 	$be_verbose   = $opts{v};
 	$be_debuggin  = $opts{D};
 	$whole_record = $opts{w};
-	$key_column   = $opts{c} if($opts{c}); # ignored if -w used
+	if ($whole_record) {
+		$key_column = -1;
+		debugprint('Will filter on entire record');
+	}
+	else {
+		# If not using whole record, we go by column. # > Name
+		if ($opts{c}) {
+			$key_column      = $opts{c};
+			die "Column number must be positive\n" if ($key_column < 1);
+			debugprint("Will filter on column $key_column");
+		}
+		elsif ($opts{C}) {
+			$key_column_name = $opts{C};
+			debugprint("Will filter on column named \"$key_column_name\"");
+		}
+		else {
+			die "Supply a column #/name to filter on using -c/-C. Run with -h for help\n";
+		}
+	}
 	if ($opts{d}) {
 		# Grab the delimiter and escape any regex metachar
 		$delimiter = $opts{d};
@@ -111,19 +133,15 @@ sub handle_commandline_args() {
 	$mode_modifiers .= '(?i)' if $opts{i};
 	$mode_modifiers .= '(?m)' if $opts{m};
 	$mode_modifiers .= '(?s)' if $opts{s};
-	# Process all the remaining arguments - there must be at least 1
-	$key_pattern = shift @ARGV if $ARGV[0];
-	# Abort if some key values were not provided
-	die "Provide your filtering pattern as the first non-switch argument. Run with -h for help\n" unless defined($key_pattern);
-	if ($whole_record) {
-		$key_column = -1;
-		debugprint('Will filter on entire record');
+	# Grab the pattern either from the -p switch or as a remaining argument
+	if ($opts{p}) {
+		$key_pattern = $opts{p};
 	}
 	else {
-		die "Supply a column # to filter on using -c. Run with -h for help\n" unless defined($key_column);
-		die "Column number must be positive\n" if ($key_column < 1);
-		debugprint("Will filter on column $key_column");
+		$key_pattern = shift @ARGV if $ARGV[0];
 	}
+	# Abort if pattern was not provided
+	die "Provide your filtering pattern using -p or as the first non-switch argument. Run with -h for help\n" unless defined($key_pattern);
 	# Do not allow multiple files to be provided
 	die "Error: supply at most 1 filename to process\n" if ($#ARGV >= 1);
 	if ($#ARGV == 0) {
@@ -155,10 +173,16 @@ sub build_regex_objects_1() {
 	my $counting_pattern = '\G(?:^|' . $delimiter . ')(?:"(?>[^"]*)(?>""[^"]*)*"|[^"' . $delimiter . ']*)';
 	$ro_counting   = qr/$counting_pattern/o;
 	debugprint("Regex object for counting: $ro_counting ");
+
+	# This pattern identifies a line that is definitely problematic and
+	# should be discarded: a field that has enclosing double-quotes and
+	# contains an unescaped double-quote
+	$ro_bad_line   = qr/(^|$delimiter)"[^"]*"(?!$delimiter|"|$)/o;
 }
 
 
 # Read/print line 1, and analyze it to determine how many fields each record should contain.
+# If the user is selecting the column by name, here's where we do it
 sub process_line1 {
 	my $line1 = <>;
 	$num_fields = count_fields($line1);
@@ -170,8 +194,23 @@ sub process_line1 {
 	# b) contains no d-quotes or commas
 	my $full_line_pattern = "^$content_pattern(?:$delimiter$content_pattern" . ')*$';
 	die "Bad header line - aborting" unless $line1 =~ m/$full_line_pattern/;
-	# Finally, quick check on requested column # filtering
-	die "Column number exceeds field count - aborting" if ($key_column > $num_fields);
+	# Final steps depend on if we are filtering by column - and # vs name
+	if (defined($key_column)) {
+		die "Column number exceeds field count - aborting" if ($key_column > $num_fields);
+	}
+	elsif (defined($key_column_name)) {
+		my $i = 1;
+		foreach ($line1 =~ m/$ro_counting/g) {
+			debugprint("Col $i:\t$_");
+			if (/(?:^|$delimiter)"?$key_column_name"?(?:$delimiter|$)/o) {
+				$key_column = $i;
+				debugprint("Will filter on column $key_column");
+				return;
+			}
+			$i++;
+		}
+		die "No column named '$key_column_name' found in header";
+	}
 }
 
 
@@ -209,12 +248,20 @@ sub process_body() {
 	while (my $line = <>) {
 		if (is_record_ok($line)) {
 			if ($record) {
-				verboseprint("Dropping bad record from lines $mlr_start - ", $. - 1);
+				verboseprint("Dropping bad record (too few fields) from lines $mlr_start - ", $. - 1);
 				$record = ''; # reset for the next loop iteration
 				$tally_bad++;
 			}
 			apply_filter($line);
 			$mlr_start = $. + 1;
+			next;
+		}
+		# Try to identify & drop lines with an unescaped double-quote, which would ruin things
+		if ($line =~ $ro_bad_line) {
+			verboseprint("Dropping bad record (unescaped double-quote) from lines $mlr_start - $.");
+			$record = '';
+			$mlr_start = $. + 1;
+			$tally_bad++;
 			next;
 		}
 		# Keep/begin compiling a record from this line, which alone doesn't amount to a full record
@@ -227,7 +274,7 @@ sub process_body() {
 		}
 		my $count = count_fields($record);
 		if ($count > $num_fields) {
-			verboseprint("Dropping bad record from lines $mlr_start - $.");
+			verboseprint("Dropping bad record (too many fields) from lines $mlr_start - $.");
 			$record = '';
 			$mlr_start = $. + 1;
 			$tally_bad++;
@@ -238,7 +285,7 @@ sub process_body() {
 	} # end while loop
 	if ($record) {
 		# Hit EOF while building up a record, so scrap it
-		verboseprint("Dropping bad record from lines $mlr_start - end");
+		verboseprint("Dropping bad record (too few fields) from lines $mlr_start - end");
 		$record = '';
 		$tally_bad++;
 	}
