@@ -1,19 +1,17 @@
 #!/usr/bin/env perl
 my $SCRIPTNAME   = 'Record/Regex Filter';
-my $LAST_UPDATED = '2022-03-11';
+my $LAST_UPDATED = '2022-03-13';
 # Author: Michael Chu, https://github.com/michaelgchu/
 # See Usage() for purpose and call details
 # Credits: the pattern to identify a field and its preceding delimiter is taken
 # from Jeffrey E.F. Friedl's "Mastering Regular Expressions" (3rd ed, pg 271)
-# TODO:
-# - add colour to show the matching record bits, like grep can. Since this modifies the output, it must be an optional flag
-# - add colour to the debug/verbose output?
 use strict;
 use Getopt::Std;
+use Term::ANSIColor;
 
 sub usage() {
+	print colored("$SCRIPTNAME ($LAST_UPDATED)\n", 'underline');
 	print << "EOD";
-$SCRIPTNAME ($LAST_UPDATED)
 Usage: $0 <options> pattern [file]
 
 Filters delimited data by applying the provided regular expression 'pattern'.
@@ -59,6 +57,8 @@ OPTIONS
     -m               Apply multiline regex switch          via (?m)
     -s               Apply dot-matches-all regex switch    via (?s)
     -w               Apply pattern to Whole record, instead of a single field
+    -G               Add red colour to show what matched (like grep)
+    -R               Remove Carriage Returns (0x0D) from the ends of lines 
     -h               This help screen
     -v               Print verbose messages on STDERR
     -D               Print debug messages on STDERR
@@ -74,10 +74,10 @@ my $delimiter = ',';
 # There's probably a better way to handle all these settings and stuff
 # Perhaps by returning & passing hashes? https://beginnersbook.com/2017/02/subroutines-and-functions-in-perl/
 my ($key_column, $key_column_name, $num_fields, $key_pattern,
-    $whole_record, $be_verbose, $be_debuggin, $mode_modifiers,
-    $content_pattern,
-    $ro_counting, $ro_test_record, $ro_selector, $ro_filter, $ro_bad_line,
-    $tally_bad, $tally_filtered, $tally_excluded
+    $whole_record, $mode_modifiers, $content_pattern,
+    $be_verbose, $be_debuggin, $be_removing_cr, $be_like_grep,
+    $ro_counting, $ro_test_record, $ro_selector, $ro_filter, $ro_bad_line, $ro_grep,
+    $tally_bad, $tally_filtered, $tally_excluded, $tally_cr
     );
 
 # ==============================================================
@@ -99,11 +99,13 @@ exit 1;				# otherwise provide return code 1
 sub handle_commandline_args() {
 	# Process all the switches
 	my %opts;
-	getopts('c:C:d:p:himswvD', \%opts) or usage();
+	getopts('c:C:d:p:GRhimswvD', \%opts) or usage();
 	usage() if $opts{h};
-	$be_verbose   = $opts{v};
-	$be_debuggin  = $opts{D};
-	$whole_record = $opts{w};
+	$be_verbose     = $opts{v};
+	$be_debuggin    = $opts{D};
+	$be_removing_cr = $opts{R};
+	$be_like_grep   = $opts{G};
+	$whole_record   = $opts{w};
 	if ($whole_record) {
 		$key_column = -1;
 		debugprint('Will filter on entire record');
@@ -193,10 +195,10 @@ sub process_line1 {
 	# a) starts & ends with d-quotes, possibly containing delimiters or doubled d-quotes within
 	# b) contains no d-quotes or commas
 	my $full_line_pattern = "^$content_pattern(?:$delimiter$content_pattern" . ')*$';
-	die "Bad header line - aborting" unless $line1 =~ m/$full_line_pattern/;
+	die colored("Bad header line - aborting", 'red') unless $line1 =~ m/$full_line_pattern/;
 	# Final steps depend on if we are filtering by column - and # vs name
 	if (defined($key_column)) {
-		die "Column number exceeds field count - aborting" if ($key_column > $num_fields);
+		die colored("Column number exceeds field count - aborting", 'red') if ($key_column > $num_fields);
 	}
 	elsif (defined($key_column_name)) {
 		my $i = 1;
@@ -209,7 +211,7 @@ sub process_line1 {
 			}
 			$i++;
 		}
-		die "No column named '$key_column_name' found in header";
+		die colored("No column named '$key_column_name' found in header", 'red');
 	}
 }
 
@@ -228,14 +230,36 @@ sub build_regex_objects_2() {
 	# This pattern is used to pull out the key field (to filter on)
 	# However, it will take the enclosing double-quotes, so that will have
 	# to be removed before applying the filter
-	my $field_capture_pattern;
+	my $field_capture_pattern, my $other_f_count = $key_column - 1; # Subtract 1 for the 1st field
 	$field_capture_pattern = "^($content_pattern)";
 	if ($key_column > 1) {
-		$other_count = $key_column - 1; # Subtract 1 for the 1st field
-		$field_capture_pattern .= "(?:$delimiter($content_pattern)){$other_count}";
+		$field_capture_pattern .= "(?:$delimiter($content_pattern)){$other_f_count}";
 	}
 	$ro_selector   = qr/$field_capture_pattern/o;
 	debugprint("Regex object for column selection: $ro_selector ");
+
+	# This pattern is only used when Grep colourization is on - it breaks
+	# the record out into 3 parts: before the field, the field itself,
+	# after the field.
+	# It's similar to the  $ro_selector  but adds extra fluff that is
+	# normally not required and likely slows things down
+	if ($be_like_grep) {
+		my $for_grep;
+		if ($key_column == 1) {
+			$for_grep = "^()($content_pattern)(.*)\$";
+		}
+		else {
+			# $1 / $3 will have everything before / after the key column, including delimiter.
+			# Coding note: tried using a quantifier, but that didn't work
+			$for_grep = "^(";
+			foreach (1..$other_f_count) {
+				$for_grep .= $content_pattern . $delimiter;
+			}
+			$for_grep .= ")($content_pattern)(.*)\$";
+		}
+		$ro_grep  = qr/$for_grep/o;
+		debugprint("Regex object for Grep colour printing: $ro_grep ");
+	}
 }
 
 
@@ -244,7 +268,7 @@ sub build_regex_objects_2() {
 sub process_body() {
 	my $record = '';	# for building up a multi-line record
 	my $mlr_start = 2;	# for displaying start/end points of multi-line records
-	$tally_bad = 0; $tally_filtered = 0; $tally_excluded = 0;
+	$tally_bad = 0; $tally_filtered = 0; $tally_excluded = 0; $tally_cr = 0;
 	while (my $line = <>) {
 		if (is_record_ok($line)) {
 			if ($record) {
@@ -308,8 +332,10 @@ sub count_fields {
 
 # Grab the requested field from the line/record (or all of it), then test using
 # the provided pattern.
+# If the user requested Grep-like colouring, we do that before printing.
+# If the user requested to remove Carriage Returns, we do that before printing.
 sub apply_filter () {
-	my $text;
+	my $text, my $got_dblquot = 0;
 	if ($whole_record) {
 		$text = $_[0];	# take the whole thing
 	}
@@ -317,10 +343,26 @@ sub apply_filter () {
 		debugprint("Record       : -=$_[0]=- ");
 		$_[0] =~ m/$ro_selector/ ; # apply regex to capture correct field
 		$text = $+;	# take the last match == key column
-		$text =~ s/^"//; $text =~ s/"$//; # remove any enclosing double-quotes
+		$got_dblquot += $text =~ s/^"//; $text =~ s/"$//; # remove any enclosing double-quotes
 		debugprint("Captured text: -=$text=- ");
 	}
 	if ($text =~ m/$ro_filter/) {
+		if ($be_like_grep) {
+			my $on = color('red'); my $off = color('reset');
+			if ($whole_record) {
+				$_[0] =~ s/($ro_filter)/$on$1$off/g;
+			}
+			else {
+				$_[0] =~ m/$ro_grep/; # apply regex to chunk up the record
+				my $before = $1; my $after = $3;
+				# And now rebuild the record
+				$text =~ s/($ro_filter)/$on$1$off/g;
+				$text = '"' . $text . '"' if ($got_dblquot);
+				$_[0] = $before . $text . $after . "\n";
+			}
+		}
+		# Remove any CR's that do not make up the CRLF of DOS files
+		$tally_cr += ($_[0] =~ s/\x0D(?!\x0A$)//gmo) if ($be_removing_cr);
 		print $_[0];
 		$tally_filtered++;
 	}
@@ -332,15 +374,16 @@ sub print_report() {
 	verboseprint("Records retained    : $tally_filtered");
 	verboseprint("Records filtered out: $tally_excluded");
 	verboseprint("Bad records dropped : $tally_bad");
+	verboseprint("0x0D chars removed  : $tally_cr") if $be_removing_cr;
 	verboseprint("Total records       :", $tally_filtered + $tally_excluded + $tally_bad);
 }
 
 sub verboseprint() {
-	print STDERR "[@_]\n" if $be_verbose;
+	print STDERR colored("[@_]\n", 'blue') if $be_verbose;
 }
 
 sub debugprint() {
-	print STDERR "<@_>\n" if $be_debuggin;
+	print STDERR colored("<@_>\n", 'green') if $be_debuggin;
 }
 
 #EOF
