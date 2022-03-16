@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 my $SCRIPTNAME   = 'Record/Regex Filter';
-my $LAST_UPDATED = '2022-03-13';
+my $LAST_UPDATED = '2022-03-15';
 # Author: Michael Chu, https://github.com/michaelgchu/
 # See Usage() for purpose and call details
 # Credits: the pattern to identify a field and its preceding delimiter is taken
@@ -176,10 +176,12 @@ sub build_regex_objects_1() {
 	$ro_counting   = qr/$counting_pattern/o;
 	debugprint("Regex object for counting: $ro_counting ");
 
-	# This pattern identifies a line that is definitely problematic and
-	# should be discarded: a field that has enclosing double-quotes and
-	# contains an unescaped double-quote
-	$ro_bad_line   = qr/(^|$delimiter)"[^"]*"(?!$delimiter|"|$)/o;
+	# This $ro_bad_line doesn't work as expected, so commenting out for now.
+	# Applying it causes the program to discard valid records.
+	## This pattern identifies a line that is definitely problematic and
+	## should be discarded: a field that has enclosing double-quotes and
+	## contains an unescaped double-quote
+	#$ro_bad_line   = qr/(^|$delimiter)"[^"]*"(?!$delimiter|"|$)/o;
 }
 
 
@@ -280,14 +282,14 @@ sub process_body() {
 			$mlr_start = $. + 1;
 			next;
 		}
-		# Try to identify & drop lines with an unescaped double-quote, which would ruin things
-		if ($line =~ $ro_bad_line) {
-			verboseprint("Dropping bad record (unescaped double-quote) from lines $mlr_start - $.");
-			$record = '';
-			$mlr_start = $. + 1;
-			$tally_bad++;
-			next;
-		}
+		## Try to identify & drop lines with an unescaped double-quote, which would ruin things
+		#if ($line =~ $ro_bad_line) {
+		#	verboseprint("Dropping bad record (unescaped double-quote) from lines $mlr_start - $.");
+		#	$record = '';
+		#	$mlr_start = $. + 1;
+		#	$tally_bad++;
+		#	next;
+		#}
 		# Keep/begin compiling a record from this line, which alone doesn't amount to a full record
 		$record .= $line;
 		if (is_record_ok($record)) {
@@ -363,6 +365,7 @@ sub apply_filter () {
 		}
 		# Remove any CR's that do not make up the CRLF of DOS files
 		$tally_cr += ($_[0] =~ s/\x0D(?!\x0A$)//gmo) if ($be_removing_cr);
+		# Finally, output the record
 		print $_[0];
 		$tally_filtered++;
 	}
