@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 Script_Name    = 'Regex Learning Tool'
-Script_Version = '0.2.0'
+Script_Version = '0.3.0'
 Script_Description = " ".join([
         "This program provides a simple way to write a regular\n",
         "expression and see what portions of text it will match.\n",
@@ -9,25 +9,29 @@ Script_Description = " ".join([
         "- enter a pattern into the top text field\n",
         "- use the checkboxes to set any flags to use\n"
         "- enter your text content into the large textbox\n",
-        "- click the \"Find matches\" button\n",
+        "- click the \"Find matches\" button or press ENTER within the pattern field\n",
         "The tool will highlight all matches"])
 Known_Bugs = " ".join([
-        "Nothing big. The messagebox is awkward ...\n",
+        "Nothing yet ...\n",
         ])
 ''' 
 Author: Michael G Chu - https://github.com/michaelgchu
-Last updated: Oct 2 2022
+Last updated: Oct 9 2022
+You may need to install Python's Tkinter package. On Debian Linux, this should do it:
+    sudo apt install python3-tk
 
 TODO:
+- Add font sizing options
 - add option for live updates as you modify pattern or content
-- add search & replace ability
 - add hover tooltips for flags
+- add search & replace ability
 - add ability to show/copy the Python commands to perform these actions
 
 References
 https://stackoverflow.com/questions/23435648/how-i-can-change-the-background-color-and-text-color-of-a-textbox-done-with-tkin
 https://tkdocs.com/tutorial/text.html
 https://stackoverflow.com/questions/14824163/how-to-get-the-input-from-the-tkinter-text-widget
+https://stackoverflow.com/questions/16996432/how-do-i-bind-the-enter-key-to-a-function-in-tkinter
 '''
 
 import tkinter as tk
@@ -46,6 +50,14 @@ highlight_colours = ['cyan', 'yellow'] # 2nd value will show first
 # Establish our global var that stores the Tkinter root object
 root = None
 
+pattern_samples = [
+    ('Find capital letters', '[A-Z]', 'g'),
+    ('Find groups of 4 or more letters', '[A-Z]{4,}', 'gi'),
+    ('Find North American phone numbers, eg +1-416-123-4567', r'(?:\+1-)?\d{3}-\d{3}-\d{4}', 'g'),
+    ('Find repeated words', r'\b([A-Z]+) +\1\b', 'gi'),
+    ('Find words appearing twice', r'\b([A-Z]+)\b(?=.*?\1\b)', 'gis'),
+]
+
 
 #%% These are all the functions to provide key interactivity in the Tk application
 
@@ -57,10 +69,10 @@ def show_help():
 
 
 def report_status(selfie, message, category='info'):
-    '''Prints a message (to console), and more importantly updates the
+    '''Updates the
     <statusmsg> Tk Label in the GUI.  The optional category parameter dictates
     the formatting: "info" is normal; "error" makes the text red.'''
-    print(message)
+    #print(message)
     if category.lower() == 'error':
         selfie.statusmsg.configure(foreground='red')
     else:
@@ -160,12 +172,12 @@ root.av_statusmsg.set('Ready!')
 
 # These vars tie to checkbox elements in the GUI
 root.av_flag_g = tk.IntVar()
-root.av_flag_g.set(1)
 root.av_flag_i = tk.IntVar()
-root.av_flag_i.set(0)
 root.av_flag_m = tk.IntVar()
-root.av_flag_m.set(0)
 root.av_flag_s = tk.IntVar()
+root.av_flag_g.set(1)
+root.av_flag_i.set(0)
+root.av_flag_m.set(0)
 root.av_flag_s.set(0)
 
 
@@ -181,6 +193,27 @@ menubar.add_cascade(label="File", menu=filemenu)
 helpmenu = tk.Menu(menubar, tearoff=0)
 helpmenu.add_command(label="About", command=show_help)
 menubar.add_cascade(label="Help", menu=helpmenu)
+
+## Set up the sample pattern entries
+# Create the menu, which will be nested
+samples = tk.Menu(helpmenu, tearoff=0)
+# and add it as a cascade to the Help menu
+helpmenu.add_cascade(label='Sample patterns', menu=samples)
+
+def apply_sample_pattern(selfie, pattern, flags):
+    '''Updates the pattern and flag Tk widgets using the provided values'''
+    selfie.av_pattern.set(pattern)
+    selfie.av_flag_g.set('g' in flags)
+    selfie.av_flag_i.set('i' in flags)
+    selfie.av_flag_m.set('m' in flags)
+    selfie.av_flag_s.set('s' in flags)
+    report_status(selfie, '=> /' + pattern + '/' + flags)
+def _assignIt(p, f):
+    return lambda: apply_sample_pattern(root, p, f)
+
+# Add each of the sample patterns as a menu entry
+for s in pattern_samples:
+    samples.add_command(label=s[0], command=_assignIt(s[1], s[2]))
 
 # display the menu bar
 root.config(menu=menubar)
@@ -216,6 +249,9 @@ pattern_label_slash1 = tk.Label(top_frame, text='/', bg=GUI_BG_Colour)
 pattern_text  = tk.Entry(top_frame, textvariable=root.av_pattern)
 pattern_label_slash2 = tk.Label(top_frame, text='/', bg=GUI_BG_Colour)
 
+# This 'bind' this lets it activate on pressing ENTER
+pattern_text.bind('<Return>', lambda x: begin_payload(root))
+
 # Layout the widgets in the top frame
 ## By adding the 'sticky' option, we get the field to stretch out
 pattern_label_slash1.grid(              row=1, column=0)
@@ -245,7 +281,7 @@ cb_flag_s.grid(          row=0, column=3, padx=5)
 textScrollbar  = tk.Scrollbar(main_frame)
 root.text = tk.Text(main_frame, yscrollcommand = textScrollbar.set)
 root.text.insert(tk.END, '''There once was a man from Nantucket
-Who kept all his cash in a bucket.
+Who kept kept all his cash in a bucket.
     But his daughter, named Nan,
     Ran away with a man
 And as for the bucket, Nantucket.''')
@@ -272,6 +308,7 @@ root.statusmsg.grid(row=0, column=1, sticky='nsew')
 
 begin_button = tk.Button(btm_frame, text='Find matches',
                                   command=lambda: begin_payload(root))
+
 
 begin_button.grid(row=0, column=0, padx=5, sticky='e')
 
