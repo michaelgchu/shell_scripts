@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 Script_Name    = 'Regex Learning Tool'
-Script_Version = '0.3.0'
+Script_Version = '0.4.0'
 Script_Description = " ".join([
         "This program provides a simple way to write a regular\n",
         "expression and see what portions of text it will match.\n",
@@ -14,14 +14,14 @@ Script_Description = " ".join([
 Known_Bugs = " ".join([
         "Nothing yet ...\n",
         ])
-''' 
+'''
 Author: Michael G Chu - https://github.com/michaelgchu
-Last updated: Oct 9 2022
-You may need to install Python's Tkinter package. On Debian Linux, this should do it:
+Last updated: Oct 13 2022
+You may need to install Python's Tkinter package. On Debian Linux:
     sudo apt install python3-tk
 
 TODO:
-- Add font sizing options
+- better popup window for message?
 - add option for live updates as you modify pattern or content
 - add hover tooltips for flags
 - add search & replace ability
@@ -32,10 +32,14 @@ https://stackoverflow.com/questions/23435648/how-i-can-change-the-background-col
 https://tkdocs.com/tutorial/text.html
 https://stackoverflow.com/questions/14824163/how-to-get-the-input-from-the-tkinter-text-widget
 https://stackoverflow.com/questions/16996432/how-do-i-bind-the-enter-key-to-a-function-in-tkinter
+# https://stackoverflow.com/questions/4072150/how-to-change-a-widgets-font-style-without-knowing-the-widgets-font-family-siz
+# https://stackoverflow.com/questions/48731746/how-to-set-a-tkinter-widget-to-a-monospaced-platform-independent-font
+# https://stackoverflow.com/questions/66767590/obtaining-font-object-from-a-tkinter-widget
 '''
 
 import tkinter as tk
 from tkinter import messagebox
+import tkinter.font as tkFont
 import re
 
 #%% Script Configuration / Globals setting
@@ -54,8 +58,8 @@ pattern_samples = [
     ('Find capital letters', '[A-Z]', 'g'),
     ('Find groups of 4 or more letters', '[A-Z]{4,}', 'gi'),
     ('Find North American phone numbers, eg +1-416-123-4567', r'(?:\+1-)?\d{3}-\d{3}-\d{4}', 'g'),
-    ('Find repeated words', r'\b([A-Z]+) +\1\b', 'gi'),
-    ('Find words appearing twice', r'\b([A-Z]+)\b(?=.*?\1\b)', 'gis'),
+    ('Find double words', r'\b([A-Z]+) +\1\b', 'gi'),
+    ('Find words appearing twice anywhere', r'\b([A-Z]+)\b(?=.*?\1\b)', 'gis'),
 ]
 
 
@@ -79,7 +83,7 @@ def report_status(selfie, message, category='info'):
         selfie.statusmsg.configure(foreground='black')
     selfie.av_statusmsg.set(message)
     selfie.statusmsg.update() # run this so it takes effect immediately
-    
+
 
 def begin_payload(selfie):
     '''Ensure all inputs are provided, then kick off the Payload'''
@@ -113,7 +117,7 @@ def payload_action(selfie):
     # Grab the pattern
     pattern = selfie.av_pattern.get()
     # Grab the text content. Specify 'end-1c' so we don't get a newline at end
-    content = selfie.text.get('1.0', 'end-1c') 
+    content = selfie.text.get('1.0', 'end-1c')
     # Grab all the flags we support
     flags = 0
     if selfie.av_flag_i.get() == 1:
@@ -140,7 +144,7 @@ def payload_action(selfie):
         selfie.text.tag_add(tagname, f"1.0 + {start_at} chars", f"1.0 + {end_at} chars")
         selfie.text.tag_config(tagname, background=highlight_colours[i%2])
         if just1:
-            return (True, 1)    
+            return (True, 1)
     return (True, i)
 
 
@@ -153,9 +157,34 @@ root = tk.Tk()
 root.title(Script_Name)
 root.geometry(f'{GUI_Width}x{GUI_Height}')
 
-#%% Define the Application Variables, that the widgets can touch
-### Also establish the event callbacks/hooks.
+# Set up the "named font" that will be used throughout. This allows for easy
+# font resizing options
+# The base Menu bar does not seem to resize in Windows - works ok in Linux.
+# Testing shows that if you try to create a named font with an unavailable font
+# family, tkinter will just use a default one instead of throwing an error
+#   w = tk.Button(font = root.customFontMS)
+#   wfont = tkFont.nametofont(w.cget('font'))
+#   print(wfont.actual())
+root.customFont   = tkFont.Font(family="TkDefaultFont", size=12)
+root.customFontMS = tkFont.Font(family="Courier", size=12)  # family='TkFixedFont'
 
+def font_bigger(selfie):
+    '''Increase the size of all named fonts, which in turn increases the size of
+    all widgets'''
+    size = selfie.customFont['size']
+    selfie.customFont.configure(size=size+2)
+    size = selfie.customFontMS['size']
+    selfie.customFontMS.configure(size=size+2)
+def font_smaller(selfie):
+    '''Decrease the size of all named fonts, which in turn decreases the size of
+    all widgets'''
+    size = selfie.customFont['size']
+    selfie.customFont.configure(size=size-2)
+    size = selfie.customFontMS['size']
+    selfie.customFontMS.configure(size=size-2)
+
+
+#%% Define the Application Variables, that the widgets can touch
 # This var stores the regex pattern to apply
 root.av_pattern = tk.StringVar()
 root.av_pattern.set("[A-Z]")
@@ -170,7 +199,7 @@ root.av_pattern.set("[A-Z]")
 root.av_statusmsg = tk.StringVar()
 root.av_statusmsg.set('Ready!')
 
-# These vars tie to checkbox elements in the GUI
+# These vars tie to checkbox elements in the GUI - global will be on
 root.av_flag_g = tk.IntVar()
 root.av_flag_i = tk.IntVar()
 root.av_flag_m = tk.IntVar()
@@ -186,19 +215,22 @@ menubar = tk.Menu(root)
 
 # create a pulldown menu, and add it to the menu bar
 filemenu = tk.Menu(menubar, tearoff=0)
-filemenu.add_command(label="Exit", command=root.destroy)
-menubar.add_cascade(label="File", menu=filemenu)
+filemenu.add_command(label="+ font size", command=lambda: font_bigger(root), font=root.customFont)
+filemenu.add_command(label="- font size", command=lambda: font_smaller(root), font=root.customFont)
+filemenu.add_separator()
+filemenu.add_command(label="Exit", command=root.destroy, font=root.customFont)
+menubar.add_cascade(label="File", menu=filemenu, font=root.customFont)
 
 # create a pulldown menu, and add it to the menu bar
 helpmenu = tk.Menu(menubar, tearoff=0)
-helpmenu.add_command(label="About", command=show_help)
-menubar.add_cascade(label="Help", menu=helpmenu)
+helpmenu.add_command(label="About", command=show_help, font=root.customFont)
+menubar.add_cascade(label="Help", menu=helpmenu, font=root.customFont)
 
 ## Set up the sample pattern entries
 # Create the menu, which will be nested
 samples = tk.Menu(helpmenu, tearoff=0)
 # and add it as a cascade to the Help menu
-helpmenu.add_cascade(label='Sample patterns', menu=samples)
+helpmenu.add_cascade(label='Sample patterns', menu=samples, font=root.customFont)
 
 def apply_sample_pattern(selfie, pattern, flags):
     '''Updates the pattern and flag Tk widgets using the provided values'''
@@ -213,7 +245,7 @@ def _assignIt(p, f):
 
 # Add each of the sample patterns as a menu entry
 for s in pattern_samples:
-    samples.add_command(label=s[0], command=_assignIt(s[1], s[2]))
+    samples.add_command(label=s[0], command=_assignIt(s[1], s[2]), font=root.customFont)
 
 # display the menu bar
 root.config(menu=menubar)
@@ -245,9 +277,9 @@ btm_frame.grid( row=3, sticky="ew")
 
 top_frame.grid_columnconfigure(1, weight=1)
 
-pattern_label_slash1 = tk.Label(top_frame, text='/', bg=GUI_BG_Colour)
-pattern_text  = tk.Entry(top_frame, textvariable=root.av_pattern)
-pattern_label_slash2 = tk.Label(top_frame, text='/', bg=GUI_BG_Colour)
+pattern_label_slash1 = tk.Label(top_frame, text='/', bg=GUI_BG_Colour, font=root.customFontMS)
+pattern_text  = tk.Entry(top_frame, textvariable=root.av_pattern, font=root.customFontMS)
+pattern_label_slash2 = tk.Label(top_frame, text='/', bg=GUI_BG_Colour, font=root.customFontMS)
 
 # This 'bind' this lets it activate on pressing ENTER
 pattern_text.bind('<Return>', lambda x: begin_payload(root))
@@ -262,10 +294,10 @@ pattern_label_slash2.grid(              row=1, column=2)
 #%% Create & lay out the widgets for the second frame
 ###    checkboxes below that for all the important flags that I know: g i m s
 
-cb_flag_g = tk.Checkbutton(sec_frame, text='g', variable=root.av_flag_g)
-cb_flag_i = tk.Checkbutton(sec_frame, text='i', variable=root.av_flag_i)
-cb_flag_m = tk.Checkbutton(sec_frame, text='m', variable=root.av_flag_m)
-cb_flag_s = tk.Checkbutton(sec_frame, text='s', variable=root.av_flag_s)
+cb_flag_g = tk.Checkbutton(sec_frame, text='g', variable=root.av_flag_g, font=root.customFontMS)
+cb_flag_i = tk.Checkbutton(sec_frame, text='i', variable=root.av_flag_i, font=root.customFontMS)
+cb_flag_m = tk.Checkbutton(sec_frame, text='m', variable=root.av_flag_m, font=root.customFontMS)
+cb_flag_s = tk.Checkbutton(sec_frame, text='s', variable=root.av_flag_s, font=root.customFontMS)
 
 # Layout the widgets in the top frame
 ## By adding the 'sticky' option, we get the field to stretch out
@@ -279,7 +311,7 @@ cb_flag_s.grid(          row=0, column=3, padx=5)
 ###   a single text area that word wraps, with a vertical scroll bar
 
 textScrollbar  = tk.Scrollbar(main_frame)
-root.text = tk.Text(main_frame, yscrollcommand = textScrollbar.set)
+root.text = tk.Text(main_frame, yscrollcommand = textScrollbar.set, font=root.customFontMS)
 root.text.insert(tk.END, '''There once was a man from Nantucket
 Who kept kept all his cash in a bucket.
     But his daughter, named Nan,
@@ -303,10 +335,11 @@ root.text.grid( row=1, column=0, sticky='nsew')
 btm_frame.grid_columnconfigure(1, weight=1)
 
 root.statusmsg = tk.Label(btm_frame, textvariable=root.av_statusmsg,
-                          bg='white', wraplength=500, justify="center")
+                          bg='white', wraplength=500, justify="center",
+                          font=root.customFont)
 root.statusmsg.grid(row=0, column=1, sticky='nsew')
 
-begin_button = tk.Button(btm_frame, text='Find matches',
+begin_button = tk.Button(btm_frame, text='Find matches', font=root.customFont,
                                   command=lambda: begin_payload(root))
 
 
