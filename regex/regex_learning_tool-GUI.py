@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 Script_Name    = 'Regex Learning Tool'
-Script_Version = '0.5.0'
+Script_Version = '0.5.1'
 Script_Description = \
 '''This program provides a simple way to write a regular expression and see what portions of text it will match.
 It is meant as a tool to help you learn regex :)
@@ -18,7 +18,7 @@ You can get some working Python3 code from the **File** menu.
 '''
 '''
 Author: Michael G Chu - https://github.com/michaelgchu
-Last updated: Oct 27 2022
+Last updated: May 12 2024
 You may need to install Python's Tkinter package. On Debian Linux:
     sudo apt install python3-tk
 On RHEL:
@@ -305,8 +305,8 @@ root.grid_columnconfigure(0, weight=1)  # Allow the (only) column to grow horizo
 top_frame.grid( row=0, sticky="ew")
 # Assign this to row 1, make it stretch horizontally
 sec_frame.grid( row=1, sticky="ew")
-# Assign this to row 2, make it stretch horizontally
-main_frame.grid( row=2, sticky="ew")
+# Assign this to row 2, make it stretch in all directions
+main_frame.grid( row=2, sticky="nsew")
 # Assign this to row 3, make it stretch horizontally
 btm_frame.grid( row=3, sticky="ew")
 
