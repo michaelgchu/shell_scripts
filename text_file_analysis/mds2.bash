@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 SCRIPTNAME='Search within Markdown Vault'
-LAST_UPDATED='2025-07-19'
+LAST_UPDATED='2025-07-21'
 # Author: Michael Chu, https://github.com/michaelgchu/
 # See Usage() for purpose and call details
 #
 # Updates
 # =======
+# 2025-07-21
+# - Bug fixes for use in WSL, so it can open in VSCode
 # 2025-07-19
 # - First version, based on https://github.com/michaelgchu/Shell_Scripts_Cygwin/blob/master/documentation/mdsearch.bash
 
@@ -334,16 +336,18 @@ else # action = 'open'
 	else
 		for (( i=0; i < ${#theFiles[@]}; i++ ))
 		do
-			if [ $PauseInBetween = true -a $i -gt 0 ] ; then
-				echo "Next file: ${theFiles[i]}" > /dev/stderr
-				echo "Press ENTER to continue or CTRL-C to cancel" > /dev/stderr
-				read
-			fi
 			echo "Opening match $((i+1)): ${theFiles[i]}" > /dev/stderr
 			if [ $OpenWith = 'mdv' ] ; then
 				$OpenWith "${theFiles[i]}" | ${mdvFUcmd[@]}
+				if [ $PauseInBetween = true -a $i -gt 0 ] ; then
+					echo "Next file: ${theFiles[i]}" > /dev/stderr
+					echo "Press ENTER to continue or CTRL-C to cancel" > /dev/stderr
+					read
+				fi
 			else
-				$OpenWith "${theFiles[i]}"
+				# For explorer.exe, seems we have to be in the folder for it to open
+				cd "$(dirname "${theFiles[i]}")"
+				$OpenWith "$(basename "${theFiles[i]}")"
 			fi
 		done
 	fi
