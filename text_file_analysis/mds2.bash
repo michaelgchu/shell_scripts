@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 SCRIPTNAME='Search within Markdown Vault'
-LAST_UPDATED='2025-07-21'
+LAST_UPDATED='2025-07-25'
 # Author: Michael Chu, https://github.com/michaelgchu/
 # See Usage() for purpose and call details
 #
 # Updates
 # =======
+# 2025-07-25
+# - improved regex pattern for requiring all keywords, reducing search time (made them "lazy")
+# - other improvements/fixes
 # 2025-07-21
 # - Bug fixes for use in WSL, so it can open in VSCode
 # 2025-07-19
@@ -54,6 +57,7 @@ When opening matching files,
 OPTIONS
 =======
 -h    Show this message
+-q    Quiet mode: only print the final output
 -p <directory to search within>
 Search options:
 -C    Case sensitive search (default is insensitive)
@@ -109,10 +113,12 @@ IsRegex=false
 GrepToDisplay=false
 grepOpt=(--text --with-filename --perl-regexp --color=yes)
 UseMdv=false
-while getopts ":hp:CcfaLrlgoPmt:nx:N" OPTION
+BeQuiet=false
+while getopts ":hqp:CcfaLrlgoPmt:nx:N" OPTION
 do
 	case $OPTION in
 		h) Usage; exit 0 ;;
+		q) BeQuiet=true ;;
 		p) path="$OPTARG" ;;
 		C) CaseSensitive=true ;;
 		c) ContentSearch=true ;;
@@ -166,13 +172,13 @@ if [ $FinalAction = 'open' ] ; then
 		hash mdv &>/dev/null || { echo "Error: command 'mdv' not present. Refer to: https://github.com/axiros/terminal_markdown_viewer"; exit 1; }
 		OpenWith='mdv'
 	else
-		hash less &>/dev/null ||
-		hash explorer.exe &>/dev/null ||
-		{ echo "Sorry, I don't know how to open files on your system. Could not find less or explorer.exe"; exit 1; }
 		if hash explorer.exe &>/dev/null ; then
 			OpenWith='explorer.exe'
-		else
+		elif hash less &>/dev/null ; then
 			OpenWith='less'
+		else
+			echo "Sorry, I don't know how to open files on your system. Could not find less or explorer.exe"
+			exit 1
 		fi
 	fi
 fi
@@ -202,7 +208,7 @@ else
 	if $NeedAllKeywords ; then
 		# When all keywords must exist, we use positive lookaheads for each keyword.
 		# e.g. given the keywords 'proxy' & 'blender', the pattern will be:
-		#	(?=[\d\D]*proxy)(?=[\d\D]*blender)
+		#	(?=[\d\D]*?proxy)(?=[\d\D]*?blender)
 		# Supposedly, anchoring with '^' improves peformance. We add that on execution.
 		# Explanation of the  perl  command:
 		# 1. Trim whitespace from front and back, if any
@@ -212,7 +218,7 @@ else
 		pattern="$( perl -p -e '
 			s/^ +| +$//g;
 			s/([\\^$|()\[\].+*?{}])/\\$1/g;
-			s/([\S]+)(\s+|$)/(?='"$wildcard"'*$1)/g;' <<< "$@" )"
+			s/([\S]+)(\s+|$)/(?='"$wildcard"'*?$1)/g;' <<< "$@" )"
 	else
 		# When we can take any keyword, the regex is much simpler:  alternation.
 		# e.g. given the keywords 'proxy' & 'blender', the pattern will be:
@@ -235,7 +241,7 @@ fi
 # Summary of call to stderr
 # -------------------------------
 
-cat > /dev/stderr <<- EOM
+test $BeQuiet = 'false' && cat > /dev/stderr <<- EOM
 	Path                 : $path
 	Case sensitive       : $CaseSensitive
 	Content search       : $ContentSearch
@@ -276,15 +282,9 @@ else
 	)
 fi
 
-#echo Preview:
-#for (( i=0; i < ${#hits[@]}; i++ ))
-#do
-#		echo "$i = ${hits[i]}"
-#done
-
 # Whether we do content search or not, the final filtered list gets stored in array 'theFiles'
 if $ContentSearch ; then
-	echo "Initial find & filepath filtering identifies ${#hits[@]} files ..." > /dev/stderr
+	test $BeQuiet = 'false' && echo "Initial find & filepath filtering identifies ${#hits[@]} files ..." > /dev/stderr
 	# Within the process substitution, we:
 	# 1. Dump the list of files, nul-separated, to xargs, so all get passed to Perl as command-line args
 	# 2. Build up a Perl script that will open every file to filter for matches.
@@ -307,14 +307,16 @@ else
 	theFiles=("${hits[@]}")
 fi
 
-echo "Found ${#theFiles[@]} files" > /dev/stderr
+test $BeQuiet = 'false' && echo "Found ${#theFiles[@]} files" > /dev/stderr
 
-#printf "%s\n" "${theFiles[@]}" >/dev/stderr
+# If no files were found, then we stop here
+test ${#theFiles[@]} -eq 0 && exit 0
+
 
 # -------------------------------
 # Handle the files found
 # -------------------------------
-echo ------------------------- > /dev/stderr
+test $BeQuiet = 'false' && echo ------------------------- > /dev/stderr
 
 if [ $FinalAction = 'list' ] ; then
 	if $GrepToDisplay ; then
@@ -324,11 +326,8 @@ if [ $FinalAction = 'list' ] ; then
 		sed -r -e "s<^([^/]*)$path<\1<" # | ${mdvFUcmd[@]}
 	else
 		# Normal listing
-		for (( i=0; i < ${#theFiles[@]}; i++ ))
-		do
-			echo "${theFiles[i]}" |
-			sed -r -e "s<^([^/]*)$path<\1<"
-		done # | ${mdvFUcmd[@]}
+		# Print each filepath on a line, then cut off the base path
+		printf "%s\n" "${theFiles[@]}" | cut --characters=$((${#path} + 1))-
 	fi
 else # action = 'open'
 	if [ $OpenWith = 'less' ] ; then
@@ -336,7 +335,7 @@ else # action = 'open'
 	else
 		for (( i=0; i < ${#theFiles[@]}; i++ ))
 		do
-			echo "Opening match $((i+1)): ${theFiles[i]}" > /dev/stderr
+			test $BeQuiet = 'false' && echo "Opening match $((i+1)): ${theFiles[i]}" > /dev/stderr
 			if [ $OpenWith = 'mdv' ] ; then
 				$OpenWith "${theFiles[i]}" | ${mdvFUcmd[@]}
 				if [ $PauseInBetween = true -a $i -gt 0 ] ; then
