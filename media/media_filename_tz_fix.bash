@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 SCRIPTNAME='Media DateTime-Filename Timezone Fixer'
-LAST_UPDATED='2025-01-05'
+LAST_UPDATED='2025-08-05'
 SCRIPT_AUTHOR="Michael G Chu, https://github.com/michaelgchu/"
 # See Usage() function for purpose and calling details
 #
 # The commands used are basically:
 #	tzselect : to get home & visiting timezones
 #	find : to identify files to process, if none were explicitly provided
-#	perl : to extract date and time from a filename, plus separators
+#	perl : to extract date and time from a filename, plus separators & junk
 #	date : to determine correct name to apply to the file
 #
 # Updates (noteworthy)
 # ====================
+# 20250805: allow junk to appear at end of filename (after date and time); tweak UI formatting
 # 20250105: first version
 
 # -------------------------------
@@ -41,15 +42,17 @@ but it should be
 	20241104_081351.jpg (8am)
 
 Files must be named as: YYYYMMDD_HHMMSS.ext
-Some variations are allowed, like having dashes between the date parts.
-ex. YYYY-MM-DD_HH-MM-SS.ext
+Some variations are allowed, like having dashes between the date/time parts,
+or having extra stuff at the end of the filename.
+ex. 2024-10-26_07-27-38.jpg
+    20241026_123112(0).jpg
 
 You can supply filenames to process on the command line. If none provided, the
 script will scan the current folder and subfolders. Do not give folder names.
 Files will get renamed on the spot. While overwrites are prevented, take care
 not to run the script more than once on the same file.
 
-A log file is created, i.e. "$mylog"
+A log file is created, ex. "$mylog"
 
 OPTIONS
 =======
@@ -100,6 +103,7 @@ logecho()
 
 printTitle()
 {
+	# This also gets written to log, so do not use ANSI codes.
 	title="$SCRIPTNAME ($LAST_UPDATED)"
 	echo "$title"
 	printf "%0.s-" $(seq 1 ${#title})
@@ -130,6 +134,8 @@ do
 		V) VisitTZ="$OPTARG" ;;
 		*)
 			echo -e "\033[31mWarning: ignoring unrecognized option -$OPTARG \033[0m"
+			# Scripting note: can also set colours with 'tput setaf X': 1 = red; 7 = white / normal
+			# (It might get awkward when doing multiple things in a single output line.)
 			log "Warning: ignoring unrecognized option -$OPTARG" ;;
 	esac
 done
@@ -177,20 +183,22 @@ else
 fi
 
 # Get both timezones, if required
+# ANSI code explanation: \033[XYZm where XYZ is a semicolon-separated list
+# 1 = bold on; 4 = underline; 31 = red (think as 3 then 1-7, which aligns with: tput setaf 1); 0 = reset
 if [ -z "$HomeTZ" -o -z "$VisitTZ" ] ; then
 	if [ -z "$HomeTZ" ] ; then
-		echo -e "\n\033[1mHome Timezone\033[0m not established. Obtaining now ..."
+		echo -e "\n\033[1;4mHome Timezone\033[0m not established. Obtaining now ..."
 		HomeTZ=$(tzselect)
 		test -n "$HomeTZ" || { echo 'No timezone provided. Aborting'; exit 1; }
 	fi
 	if [ -z "$VisitTZ" ] ; then
-		echo -e "\n\033[1mVisited Timezone\033[0m not provided. Obtaining now ..."
+		echo -e "\n\033[1;4mVisited Timezone\033[0m not provided. Obtaining now ..."
 		VisitTZ=$(tzselect)
 		test -n "$VisitTZ" || { echo 'No timezone provided. Aborting'; exit 1; }
 	fi
 fi
 
-# Prepare the call summary to display and write to log
+# Prepare the call summary that will get displayed and written to log. (So don't use ANSI codes)
 msg=$(cat << EOL
 
 Call Summary
@@ -289,13 +297,15 @@ do
 ([0-5]\d)              # capture 2-digit minute as 00 -> 59
 \7                     # match observed time separator
 ([0-5]\d)              # capture 2-digit second as 00 -> 59
+(.*)                   # allow for (and capture) any extra bits in the file name
 $                      # match end of file name
 /x ) {
 		print "Dsep=$2\n";
 		print "D=$1-$3-$4\n";
 		print "S=$5\n";
 		print "Tsep=$7\n";
-		print "T=$6:$8:$9\n"; }' <<< "$name")
+		print "T=$6:$8:$9\n";
+		print "Bits=$DQ$10$DQ\n" }' -s -- -DQ='"' <<< "$name")
 
 	if [ -z "$rv" ] ; then
 		echo "-Could not grab date & time out. Skipping"
@@ -307,7 +317,7 @@ $                      # match end of file name
 	# Evaluate the perl output to set the shell variables
 	eval $rv
 	# Use the  date  command to determine new filename to set, matching to file's original convention
-	newName=$(date --date="TZ=\"$HomeTZ\" $D $T" "+%Y${Dsep}%m${Dsep}%d${S}%H${Tsep}%M${Tsep}%S")
+	newName=$(date --date="TZ=\"$HomeTZ\" $D $T" "+%Y${Dsep}%m${Dsep}%d${S}%H${Tsep}%M${Tsep}%S${Bits}")
 	newFilepath="$dir/${newName}.${ext}"
 
 	if $TestMode ; then
