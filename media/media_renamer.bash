@@ -1,6 +1,6 @@
 #!/bin/bash
 SCRIPTNAME='Media DateTime-Filename Checker'
-LAST_UPDATED='2020-08-16'
+LAST_UPDATED='2025-08-04'
 SCRIPT_AUTHOR="Michael G Chu, https://github.com/michaelgchu/"
 # See Usage() function for purpose and calling details
 #
@@ -17,6 +17,9 @@ SCRIPT_AUTHOR="Michael G Chu, https://github.com/michaelgchu/"
 #
 # Updates (noteworthy)
 # ====================
+# 20250804
+# - Change naming convention to YYYYMMDD_HHmmss
+# - Bug fix: making =~ operator insensitive after script argument processing (it wasn't seeing the -C option)
 # 20200816
 # - New feature: when the destination file already exists, check if they are the same
 # 20200104
@@ -30,9 +33,6 @@ SCRIPT_AUTHOR="Michael G Chu, https://github.com/michaelgchu/"
 # Started:  July 2012
 
 set -u
-
-# Make the =~ bash operator case insensitive
-shopt -s nocasematch
 
 # -------------------------------
 # "Constants", Globals / Defaults
@@ -55,9 +55,9 @@ Usage: ${0##*/}  [options]  [file(s) to process]
 
 Rename all the image (JPEG/HEIF) & video (MP4/MOV) files in the current directory
 tree to begin with their date/time stamp in the format:
-	YYYY-MM-DD_HH-mm-ss
+	YYYYMMDD_HHmmss
 e.g.
-	2012-02-19_19-32-22.jpg
+	20120219_193222.jpg
 It skips over files that are already named in this fashion.
 
 Alternately, you can supply filenames to process on the command line.
@@ -99,14 +99,14 @@ faillog=''
 DontKillTheLog=false
 
 
-minFileDate()
-{
-# Given a file, return either the Creation or Modification date from stat, whichever is earliest
-	timeBirth=$(stat -c '%W' "$1")
-	timeMod=$(stat -c '%Y' "$1")
-	test $timeBirth -lt $timeMod && lesser=$timeBirth || lesser=$timeMod
-	date --date="@${lesser}" +'%Y-%m-%d_%H-%M-%S'
-}
+#minFileDate()
+#{
+## Given a file, return either the Creation or Modification date from stat, whichever is earliest
+#	timeBirth=$(stat -c '%W' "$1")
+#	timeMod=$(stat -c '%Y' "$1")
+#	test $timeBirth -lt $timeMod && lesser=$timeBirth || lesser=$timeMod
+#	date --date="@${lesser}" +'%Y-%m-%d_%H-%M-%S'
+#}
 
 
 diffSeconds()
@@ -166,6 +166,10 @@ do
 	esac
 done
 shift $(($OPTIND-1))
+
+# Make the =~ bash operator case insensitive.
+# Note: cannot do this before the getopts, as it prevents case detection
+shopt -s nocasematch
 
 if $RestrictSearch ; then
 	findOptions='-maxdepth 1'
@@ -241,7 +245,7 @@ Files to process : $(
 
 Check Mode       : $CheckMode $(
 	if $CheckMode ; then
-		echo ' - test files matching @@ YYYY-MM-DD_HH-mm-ss'
+		echo ' - test files matching @@ YYYYMMDD_HHmmss'
 	fi
 )
 Test Mode        : $TestMode $(
@@ -274,7 +278,7 @@ logecho "Processing begins at: $startDT"
 
 Set_Dir_Name_Ext()
 {
-	# Sets these values from the provided filepath
+# Sets these values from the provided filepath
 	dir=${1%/*}
 	name=${1##*/}
 	ext=${1##*.}
@@ -283,10 +287,10 @@ Set_Dir_Name_Ext()
 
 Analyze_File()
 {
-	# Identify the provided file's type, and then extract out its creation date/time metadata
-	# Sets the following variables:
-	#	fileType  category  method  md  dt
-	# Returns 0/OK if we were able to pull out the 19-char date-time metadata (into  'md' )
+# Identify the provided file's type, and then extract out its creation date/time metadata
+# Sets the following variables:
+#	fileType  category  method  md  dt
+# Returns 0/OK if we were able to pull out the 19-char date-time metadata (into  'md' )
 
 	dt='N/A'
 
@@ -294,6 +298,7 @@ Analyze_File()
 	fileType=$(file --brief "$1")
 
 	# Extract creation date/time from metadata based on file type.
+	# Note: exiftool may be able to handle all these file types! Consider switching in a future version
 	if [[ "$fileType" =~ HEIF.Image ]] ; then
 		# The (new) HEIF image type. 'file' cannot extract its metadata
 		category='image'
@@ -335,14 +340,14 @@ Analyze_File()
 		return 1
 	fi
 	# Set var <dt>, which we use for naming the file
-	dt="${md:0:4}-${md:5:2}-${md:8:2}_${md:11:2}-${md:14:2}-${md:17:2}"
+	dt="${md:0:4}${md:5:2}${md:8:2}_${md:11:2}${md:14:2}${md:17:2}"
 	return 0
-}
+} # end Analyze_File()
 
 
 Build_Filepath()
 {
-	# Build out the full filepath for naming
+# Build out the full filepath for naming
 	echo "${1}/${2}.${3}"
 }
 
@@ -376,7 +381,7 @@ if $CheckMode ; then
 		# Check the filename against the metadata, and correct if necessary
 		# Build the pattern to check against.  Luckily, it's roughly the same coming out of file & ffprobe
 		# Creation time = '2016-03-13 16:30:11'
-		lookFor='/'$(tr ' :-' '.' <<< "$md")'[^/]+$'
+		lookFor='/'$(tr --delete ':-' <<< "$md" | tr ' ' '_')'[^/]+$'
 		if [[ "$filepath" =~ $lookFor ]] ; then
 			echo 'Check OK'
 			log "$filepath : OK.  Reason: filename matches metadata creation date"
@@ -403,9 +408,10 @@ if $CheckMode ; then
 	done <<- FILE_LISTING
 	$(	# Supply filenames to the loop, one per line. Either via the 'find' command, or from the prepared text file
 		if $SearchingForFiles ; then
-			# Find files that are named like 'YYYY-MM-DD_HH-MM-SS[optional extra stuff].ext'
+			# Find files that are named like 'YYYYMMDD_HHMMSS[optional extra stuff].ext'
 			find . $findOptions -regextype posix-extended \
-				-iregex '^.*/[0-9]{4}(.)[0-9]{2}\1[0-9]{2}.[0-9]{2}(.)[0-9]{2}\2[0-9]{2}[^/]*$'
+				-iregex '^.*/[0-9]{8}_[0-9]{6}[^/]*$'
+#				-iregex '^.*/[0-9]{4}(.)[0-9]{2}\1[0-9]{2}.[0-9]{2}(.)[0-9]{2}\2[0-9]{2}[^/]*$'
 		else
 			cat "$buffer"
 		fi
@@ -413,8 +419,7 @@ if $CheckMode ; then
 	FILE_LISTING
 
 
-else	# Normal non-Check Mode
-
+else	# Normal non-Check Mode, i.e. renaming
 
 	while read filepath
 	do
@@ -423,7 +428,7 @@ else	# Normal non-Check Mode
 		Set_Dir_Name_Ext "$filepath"
 
 		# Extract the date+time out of the filename, if we can identify that
-		dtFromName=$(sed --regexp-extended 's/^.*\/[^/]*([0-9]{4}).?([01][0-9]).?([0-3][0-9]).?([0-2][0-9]).?([0-5][0-9]).?([0-5][0-9]).*$/\1-\2-\3_\4-\5-\6/' <<< "$filepath")
+		dtFromName=$(sed --regexp-extended 's/^.*\/[^/]*([0-9]{4}).?([01][0-9]).?([0-3][0-9]).?([0-2][0-9]).?([0-5][0-9]).?([0-5][0-9]).*$/\1\2\3_\4\5\6/' <<< "$filepath")
 		if [ "$dtFromName" != "$filepath" ] ; then
 			echo "datetime found in name = $dtFromName"
 			newName=$(Build_Filepath "$dir" "$dtFromName" "$ext")
@@ -465,9 +470,14 @@ else	# Normal non-Check Mode
 	done <<- FILE_LISTING
 	$(	# Supply filenames to the loop, one per line. Either via the 'find' command, or from the prepared text file
 		if $SearchingForFiles ; then
-			# Assign a regex to find JPEG and MP4/MOV files that are NOT named like 'YYYY-MM-DD_HH-MM-SS[optional extra stuff].ext'
+			# Assign a regex to find JPEG and MP4/MOV files that are
+			# - NOR named like     'YYYYMMDD_HHMMSS[optional extra stuff].ext'
+			# It will catch these, so as to rename to the new format:
+			#                      'YYYY-MM-DD_HH-MM-SS[optional extra stuff].ext'
 			find . $findOptions -regextype posix-extended \
-				-iregex '.*(jpe?g|heic|mp4|mov)$' -and ! -iname '????-??-??_??-??-??*'
+				-iregex '.*(jpe?g|heic|mp4|mov)$' \
+				-and ! -regex '^.*/[0-9]{8}_[0-9]{6}[^/]*$'
+#				-and ! -iname '????-??-??_??-??-??*'
 		else
 			cat "$buffer"
 		fi
