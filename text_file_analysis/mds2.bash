@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 SCRIPTNAME='Search within Markdown Vault'
-LAST_UPDATED='2025-07-25'
+LAST_UPDATED='2025-11-23'
 # Author: Michael Chu, https://github.com/michaelgchu/
 # See Usage() for purpose and call details
 #
 # Updates
 # =======
+# 2025-11-23
+# - only use find's -follow option if there are symlinks (seems to impact WSL2 a fair bit)
 # 2025-07-25
 # - improved regex pattern for requiring all keywords, reducing search time (made them "lazy")
 # - other improvements/fixes
@@ -24,6 +26,9 @@ LAST_UPDATED='2025-07-25'
 # Failing that, it will try $XDG_DOCUMENTS_DIR and finally good ol' $HOME
 SearchPath=${VAULT_FOLDER:-$XDG_DOCUMENTS_DIR}
 : ${SearchPath:=$HOME}
+
+# Stores info about vault. Currently just whether there are symlinks to follow
+ConfigFile=$HOME/.config/mds2.conf
 
 
 # -------------------------------
@@ -92,6 +97,22 @@ printTitle() {
 	echo "$title"
 	printf "%0.s-" $(seq 1 ${#title})
 	echo 
+}
+
+vaultIsSymlinkFree() {
+	# Test if the vault location has symlinks (not whether the vault location itself is a symlink)
+	firstSymlink=$(find "$SearchPath/" -type l | head -1)
+	# Return 0 (true) if there are no symlinks
+	return ${#firstSymlink}
+}
+
+updateConfigFile() {
+	# Write out the new/updated config file
+	if vaultIsSymlinkFree ; then
+		echo 'symlinks=no' > "$ConfigFile"
+	else
+		echo 'symlinks=yes' > "$ConfigFile"
+	fi
 }
 
 
@@ -197,6 +218,17 @@ else
 	mdvFUcmd=(cat)
 fi
 
+## Read in the script config file
+# First, create the config file if it doesn't exist
+test -e "$ConfigFile" || updateConfigFile
+findFollowOpt='-follow'  # By default, we follow symlinks
+if [ "$(tr -s '/' <<< "${VAULT_FOLDER}/")" = "$(tr -s '/' <<< "${path}/")" ] ; then
+	# path is Vault Folder. Check if we should not follow symlinks
+	if grep 'symlinks=no' "$ConfigFile" >/dev/null ; then
+		findFollowOpt=''
+	fi
+fi
+
 
 # -------------------------------
 # Prepare the Perl regex pattern that will be used for ALL searching - whether the user wants a filepath search, content search, or both
@@ -272,13 +304,13 @@ if $FilepathSearch ; then
 	# 2. Feed these to a Perl command, which will filter on the keywords/regex 
 	#    and also insert the full path to all matches, for later processing
 	readarray -d $'\0' hits <   <(
-		find "$path" -follow -regextype 'posix-extended' -type f -iregex ".*\.(markdown|md)$" -printf '%P\0' |
+		find "$path" $findFollowOpt -regextype 'posix-extended' -type f -iregex ".*\.(markdown|md)$" -printf '%P\0' |
 		perl -0 -n -e "\$ins = '$path'; if (/${pattern}/${caseFlag}) { s/^/\$ins/; print }"
 	)
 else
 	# No filtering required, just find all the Markdown files
 	readarray -d $'\0' hits <   <(
-		find "$path" -follow -regextype 'posix-extended' -type f -iregex ".*\.(markdown|md)$" -print0
+		find "$path" $findFollowOpt -regextype 'posix-extended' -type f -iregex ".*\.(markdown|md)$" -print0
 	)
 fi
 
