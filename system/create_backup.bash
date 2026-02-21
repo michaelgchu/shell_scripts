@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 SCRIPTNAME='Full/Incremental Backup Creation Script plus Rsync Upload'
-LAST_UPDATED='2026-01-25'
+LAST_UPDATED='2026-01-31'
 SCRIPT_AUTHOR="Michael G Chu, https://github.com/michaelgchu/"
 
 # -------------------------------
@@ -29,6 +29,9 @@ fi
 
 # How many incremental backups we should have before the script starts recommending a new full backup
 limitIncremental=30
+
+# How many times to try uploading to the remote location (wait 30 sec between each attempt)
+maxUploadTries=5
 
 # --------------------------
 # These are internal variables- no touchies
@@ -67,7 +70,7 @@ EOM
 	test -z "$foldersToBackup" && echo -e "\n(You don't have this config file. Run without -h to create one)"
 	test -n "$foldersToBackup" && fold --spaces << EOMlocal
 
--- Below is information taken from that configuration file --
+-- Below is information taken from your configuration file --
 
 The locations that get backed up:
 $(	tr ':' '\n' <<< $foldersToBackup | cat -n )
@@ -365,8 +368,20 @@ EOM
 if [ -n "$remoteServer" ] ; then
 	echo 'Begin upload of backup & snapshot files to remote server --'
 	echo "Connecting as $remoteUserID to $remoteServer, uploading to $remotePath ..."
-	rsync -avzh "$fpBackup"   "$remoteUserID@$remoteServer:$remotePath" || { echo 'Error uploading!'; exit 1; }
-	rsync -avzh "$fpSnapshot" "$remoteUserID@$remoteServer:$remotePath" || { echo 'Error uploading!'; exit 1; }
+	echo "(Maximum of $maxUploadTries attempts)"
+	declare -i try=0
+	while true ; do
+		try+=1
+		rsync -avzh "$fpBackup"   "$remoteUserID@$remoteServer:$remotePath" &&
+		rsync -avzh "$fpSnapshot" "$remoteUserID@$remoteServer:$remotePath" && break
+		if [ $try -lt $maxUploadTries ] ; then
+			echo 'Error uploading! Waiting 30 sec before trying again ...'
+			sleep 30
+		else
+			echo 'Too many errors - aborting'
+			exit 1
+		fi
+	done
 	echo -e '\nUploads successful!\n'
 elif [ $backupType = 'full' ] ; then
 	echo "Recommended next step: copy this full backup off the system"
@@ -374,7 +389,7 @@ fi
 
 # Finally, check if we should recommend to start over with a full vs incremental
 if [ $backupType = 'incremental' ] ; then
-	if [ -a $nextLevel -ge $limitIncremental ] ; then
+	if [ $nextLevel -ge $limitIncremental ] ; then
 		message="Recommended next step: this set has many incremental backups now. Consider starting a new full backup"
 		echo $message
 		case $beep_cmd in
