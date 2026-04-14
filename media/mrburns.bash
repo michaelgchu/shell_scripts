@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 SCRIPTNAME='Mr (Ken) Burns Image-to-Video'
-LAST_UPDATED='2026-02-21'
+LAST_UPDATED='2026-04-13'
 SCRIPT_AUTHOR="Michael G Chu, https://github.com/michaelgchu/"
 # See Usage() function for purpose and calling details, also ExtendedUsage()
 
@@ -10,17 +10,14 @@ set -u
 # "Constants", Globals / Defaults
 # -------------------------------
 
+# These first few variables are default values that can be set via script arguments: fps; seconds; transitionSeconds; crfTemp; crfFinal; ext
+
 # The framerate of the video to produce. ex. 60, 30
 fps=60
 # The duration in seconds to animate the image (not including the transition, which has no zoom/pan). 7 is a good length for photos with multiple people visible.
 seconds=7
 # The duration of the fade-in/fade-out transition, as seen once you concatenate 2 of these generated videos together. 0.5 is a good number
 transitionSeconds=0.5
-
-# The resolution of the video to generate.
-# Hardcoded to 1920x1080, with no option available to change that (for now)
-# NOTE: script has only been tested with 1920x1080
-VidRes='1920x1080'
 
 # What CRF to use for the x264 encoding. Google AI sez low motion content like animated slideshows can use 18-20 without creating overly huge movie files.
 # This is for the intermediate files. Let's use higher quality for these
@@ -30,6 +27,11 @@ crfFinal=20
 
 # What media container format to use. Allowed values are 'mp4' and 'mkv'
 ext='mp4'
+
+# The resolution of the video to generate.
+# Hardcoded to 1920x1080, with no option available to change that (for now)
+# NOTE: script has only been tested with 1920x1080
+VidRes='1920x1080'
 
 # Options to pass to all calls of FFmpeg:
 # -hide_banner : prevent a lot of gunk from appearing at initial call
@@ -46,20 +48,20 @@ outputFileLocation=.
 tempFolder=/tmp
 # If you have a single RAM disk (tmpfs) defined in your /etc/fstab, then that location will be used for temporary files.
 if [ $(grep --count -P '^[^#]+\stmpfs\s' /etc/fstab) -eq 1 ] ; then
-	# Get the mount point of the single defined RAMdisk
-	folderRD=$(awk '{ if ( $3 == "tmpfs" ) print $2 }' /etc/fstab)
+#	# Get the mount point of the single defined RAMdisk
+	# This search pattern should ignore any commented lines
+	folderRD=$(awk '/^[^#]/ { if ( $3 == "tmpfs" ) print $2 }' /etc/fstab)
 	test -n "$folderRD" && tempFolder="$folderRD"
+	echo "TEMP FOLDER IS: --${tempFolder}--"
 fi
 
-
+# Set the filename for the log file to (potentially) create
 mylog="runlog-mrburns-$(date +%Y%m%d_%H%M%S).log"
 
-# Pls don't change the variables below ---
-
 # Listing of all required non-standard tools.  The script will abort if any cannot be found
+# (Interestingly, some commands like 'column' are not standard in the Debian image for WSL2)
 requiredTools='exiftool ffmpeg ffprobe'
 
-# Definitely Do not touch these variables - tweak the ones above if you want to change the timings
 
 # Prepare some variables for the temporary files we will create
 # These are the images and list file, which will always be PNG and .txt no matter what the user chooses.
@@ -83,7 +85,9 @@ Usage() {
 
 This script builds a nice photo slideshow that focuses the viewer's attention on a specific individual for each image.
 
-It generates a "Ken Burns" zoom + pan animation using a supplied photo with face tagging metadata (just 1 face tagged per image). The video starts with the full image visible and zooms in on the tagged person's face. An optional fade transition leads into and out of the video. The video file is created within the same folder as the image, and is given the same name as the image with '.$ext' added as the new extension.
+It generates a "Ken Burns" zoom + pan animation using a supplied photo with face tagging metadata (at least 1 face tagged per image). The video starts with the full image visible and zooms in on the tagged person's face. An optional fade transition leads into and out of the video. The video file is created within the same folder as the image, and is given the same name as the image with '.$ext' added as the new extension.
+
+If an image has multiple faces tagged, the first one is used by default. You can use the -p option to specify the tagname to use instead.
 
 If you provide a folder, this script processes each image contained within it (no subfolders). It will look specifically for these fipe types: .heic .heif .jpg .jpeg png tiff
 
@@ -98,7 +102,7 @@ You can run in "Check" mode to just evaluate the image metadata.
 A log file is created unless you use the -L option to disable it, i.e. "$mylog"
 
 EOM
-cat << EOM2 | column --table --separator '|' \
+cat << EOMOpt | column --table --separator '|' \
 	--table-columns Option,Parameter,Description \
 	--table-right Option \
 	--table-wrap Description
@@ -107,6 +111,7 @@ cat << EOM2 | column --table --separator '|' \
 -c||Check the input(s) - no videos are created.  Checks if the facial tagging & orientation metadata are OK.
 -o|{outputFolder}|Specify the Output folder to store all the generated videos when in the normal processing mode.  By default, it puts them in the input images' folder.
 -b|{outputFilePath}|Build the final movie/slideshow. Unlike the other processing modes, you must provide the full path & name of the movie file to create.  ex. "~/final.mp4"
+-p|{name}|Zoom in on this provided face tag. Use "RANDOM" to make it randomized per file.
 -A||When building the final movie, order the movie clips Alphabetically by filename. (Default)
 -R||When building the final movie, Randomize the order of the movie clips.
 -f|{fps}|Set the Framerate to use for the generated videos. (Default = $fps)
@@ -118,7 +123,7 @@ cat << EOM2 | column --table --separator '|' \
 -r||Force Rotations as per metadata. Use this option if the resulting videos show up sideways. (Should only be required for older versions of FFmpeg)
 -v||Verbose mode: talk a lot more
 -L||Disable Logging
-EOM2
+EOMOpt
 }
 
 ExtendedUsage() {
@@ -394,7 +399,8 @@ DoPause=true		# true == prompt before starting and for warnings
 BeVerbose=false		# true == give lots more output to console & log
 ConcatRandom=false	# true == randomize movie clip order. false = alphabetically ordered
 providedCRF=	# We won't know what mode we're in till we are past this getopts section, so have a buffer variable ready
-while getopts ":hHco:b:ARf:a:t:q:e:nrvL" OPTION
+FaceTag='FIRST'	# which face to zoom in on. Default is first one found
+while getopts ":hHco:b:p:ARf:a:t:q:e:nrvL" OPTION
 do
 	case $OPTION in
 		h) Usage; exit 0 ;;
@@ -412,6 +418,9 @@ do
 			test "$ext" = 'mp4' -o "$ext" = 'mkv' || { echo 'Error: slideshow to create must be .mp4 or .mkv'; exit 1; }
 			# Get the absolute filepath, as we will change directory before processing
 			SlideshowFilepath=$(readlink --canonicalize "$OPTARG") ;;
+		p)
+			test -z "$OPTARG" && { echo 'Error: -p requires a face tag Name or "RANDOM" to select one at random. Run with -h to see options'; exit 1; }
+			FaceTag="$OPTARG" ;;
 		A) ConcatRandom=false ;;
 		R) ConcatRandom=true ;;
 		f) test -z "$OPTARG" && { echo 'Error: -f requires a framerate. Run with -h to see options'; exit 1; }
@@ -557,6 +566,7 @@ cat << EOM2 | column --table --output-width ${COLUMNS:-80} --separator : --outpu
 Executed in dir:$(pwd)
 Arguments:$args
 Provided ($givenWut):$1
+Face:$FaceTag$(test "$FaceTag" = FIRST -o "$FaceTag" = RANDOM && echo ' face tag found')
 Mode:$(
 	test $BuildMode = 'true' && echo -e "Build Slideshow movie -> $SlideshowFilepath\nClip Order:$(test $ConcatRandom = 'true' && echo 'Random' || echo 'Alphabetical')" ||
 	( test $CheckMode = 'true' && echo 'Check Metadata (facial tagging & orientation)' ||
@@ -585,38 +595,146 @@ fi
 # These functions make heavy use of global variables, and the ability to affect global variables from within.
 # -------------------------------
 
+yoinkTagValues() {
+# Searches through the content of the $metadata variable for the given
+# metadata tag and returns its comma-separated values as 1 entry per line.
+# ex. the tag 'Region Name                     : Ma, Pa' is returned as:
+#		Ma
+#		Pa
+	test $# -eq 1 || { echo 'ERROR with call to yoinkTagValues()'; exit 1; }
+	perl -ne "if ( /^$1\s+:/ ) {
+		s/.*?://;
+		s/^\s*|\s*$//g;
+		s/, /\n/g;
+		print
+	}" <<< $metadata
+}
 
 ExtractImageMetadata() {
-# Extract specific image metadata from the supplied image file. The values get saved to 5 global variables.
-# No testing is done here.
+# Extract specific image metadata from the supplied image file. The values get saved to multiple global variables.
+# Face Tagging fields can have 1 value per person; these data are stored in global associative arrays.
+# The first value from each Face Tag field is also assigned to a normal global var, as convenience.
+# No testing is done here, besides basic checks that values were obtained.
 # Return true on success, false if there were problems using the metadata extraction tool.
-	# Extract metadata using exiftool in one shot. Specific details are yanked out further below
-	local metadata=$(exiftool "$1")
-	# If we got a non-empty result, then assuming all is well.
-	# The exiftool will produce an error message if something bad happened.
+	unset rNames aaRType aaRAX aaRAY aaRAUnit RT RAX RAY RAU
+	local rv
+	# The $metadata var is global so we can call a helper fcn
+	metadata=$(exiftool "$1")
 	test -z "$metadata" && { feedChatty 'Metadata fail'; return 1; }
-	# Begin extractions. No checks here on specific elements - not even if things are empty/blank
-	# Extract the Region Area X & Region Area Y values from the image metadata
-	# @@ Future versions of this script should be upgraded to allow you to SELECT the person you want to find tags for
-	RAX=$(<<< "$metadata" grep -P 'Region Area X' | cut -f2 -d: | tr -d [:space:])
-	RAY=$(<<< "$metadata" grep -P 'Region Area Y' | cut -f2 -d: | tr -d [:space:])
-	# Extract what is required for rotations
+
+	# Simple extractions first: what is required for rotations
 	orientation=$(<<< "$metadata" grep -P '^Orientation'  | cut -f2 -d: | sed -r 's/^\s+//')
 	imgWidth=$(   <<< "$metadata" grep -P '^Image Width'  | cut -f2 -d: | tr -d [:space:])
 	imgHeight=$(  <<< "$metadata" grep -P '^Image Height' | cut -f2 -d: | tr -d [:space:])
+
+	# We expect Region Name to potentially have spaces. Not sure what that would look like. Also not sure what it would look like if there was a comma!
+	# The rest of the metadata tags should not have spaces in the values
+
+	# Extract Region Type first to grab record count, as the values should be simple 
+	rv=$(yoinkTagValues 'Region Type')
+	test -z "$rv" && { feedChatty 'Metadata fail - Region Type missing'; return 1; }
+	# Determine the total # of tags we have by splitting on the separators
+	tagCount=$(wc -l <<< $rv)
+	feedChatty "Image has $tagCount value(s) per Face Tag"
+	# Extract all the Names and store in a normal 0-indexed array
+	rv=$(yoinkTagValues 'Region Name')
+	declare -a rNames
+	for ((i = 1; i <= tagCount; i++)) ; do
+		rNames+=($(sed -n "$i {p;q}" <<< $rv))
+	done
+
+	# Now push all the Region Type values into a global associative array
+	declare -g -A aaRType aaRAX aaRAY aaRAUnit
+	rv=$(yoinkTagValues 'Region Type')
+	for ((i = 1; i <= tagCount; i++)) ; do
+		aaRType[${rNames[$i-1]}]=$(sed -n "$i {p;q}" <<< $rv)
+	done
+	# And then the rest of the Face tags
+	rv=$(yoinkTagValues 'Region Area X')
+	test -z "$rv" && { feedChatty 'Metadata fail - Region Area X missing'; return 1; }
+	for ((i = 1; i <= tagCount; i++)) ; do
+		aaRAX[${rNames[$i-1]}]=$(sed -n "$i {p;q}" <<< $rv)
+	done
+	rv=$(yoinkTagValues 'Region Area Y')
+	test -z "$rv" && { feedChatty 'Metadata fail - Region Area Y missing'; return 1; }
+	for ((i = 1; i <= tagCount; i++)) ; do
+		aaRAY[${rNames[$i-1]}]=$(sed -n "$i {p;q}" <<< $rv)
+	done
+	rv=$(yoinkTagValues 'Region Area Unit')
+	test -z "$rv" && { feedChatty 'Metadata fail - Region Area Unit missing'; return 1; }
+	for ((i = 1; i <= tagCount; i++)) ; do
+		aaRAUnit[${rNames[$i-1]}]=$(sed -n "$i {p;q}" <<< $rv)
+	done
+	# Finally, assign the first value set to scalar globals.
+	RT=${aaRType[$rNames]}
+	RAX=${aaRAX[$rNames]}
+	RAY=${aaRAY[$rNames]}
+	RAU=${aaRAUnit[$rNames]}
+
+	# Dump out face tag data
+	if [ $BeVerbose = 'true' ] ; then
+		local dump=$((echo -e 'Region Name\tRegion Type\tRegion Area X\tRegion Area Y\tRegion Area Unit'
+		for x in ${!aaRType[@]}; do
+		echo -e "$x\t${aaRType[$x]}\t${aaRAX[$x]}\t${aaRAY[$x]}\t${aaRAUnit[$x]}"
+		done) | column --table --separator $'\t' | sed '2,$ { s/^/\t/ }')
+		feedChatty "$dump"
+	fi
 }
 
-TestImgMetadata() {
-# Extract image metadata from the supplied file and then test that all is well:
-# - confirming "Region Area X" and "Region Area Y" has just a single value each (TO ENHANCE LATER)
+GetImgMetadata() {
+# Given an image filepath and a face tag name / placeholder, this fcn extracts
+# image metadata from the file and then tests it.
+# Parameters:
+# 1) the filepath of the image
+# 2) the face tag Name or placeholder
+#	If given a Name, then this name will be searched for using a straight text match.
+#	If "FIRST" is given, then the first Name found will be selected, and its related values will be tested.
+#	If "RANDOM" is given, then all Face metadata is extracted first and a random one gets selected for testing.
+# The following items are tested:
+# - confirming image dimensions were retrieved
 # - confirming "Orientation" value is understood, and image dimensions support it
+# These tests will be against that selected face tag:
+# - confirming "Region Type" = "Face" and "Region Area Unit" = "normalized" for the given Face
+# - confirming "Region Area X" and "Region Area Y" are present
 # Tests everything. Prints to console and log right here (except for the chatty bits)
 # Returns 0/true on pass, 1/fail if metadata is missing or problematic.
 	local retcode=0
+	test $# -eq 2 || { echo 'ERROR: Bad call!'; exit 1; }
 	# Perform the metadata extraction - return immediately if there was a problem
 	ExtractImageMetadata "$1" || return 1
 
-	# Test that the facial tagging metadata is good (RAX, RAY)
+	# Face selection: either use the first set (already assigned), or pick one using $2, or make it random
+	if [ "$2" != 'FIRST' ] ; then
+		if [ "$2" = 'RANDOM' ] ; then
+			# will pick a face at random
+			FaceName=$(printf "%s\n" "${!aaRType[@]}" | shuf -n 1)
+		else
+			FaceName="$2"
+		fi
+		feedChatty "Face tag selected: $FaceName"
+		RT=${aaRType[$FaceName]:=FACE TAG NAME NOT FOUND IN IMAGE}
+		if [ "$RT" = 'FACE TAG NAME NOT FOUND IN IMAGE' ] ; then
+			logechoRed "Error: provided face tag name not found in image metadata"
+			feedChatty "Face '$FaceName' not found in image"
+			return 1
+		fi
+		RAX=${aaRAX[$FaceName]}
+		RAY=${aaRAY[$FaceName]}
+		RAU=${aaRAUnit[$FaceName]}
+	fi
+
+	# Test that the facial tagging metadata is good
+	if [ "$RT" != 'Face' ] ; then
+		logechoRed "Error: metadata tag 'Region Type' is not 'Face'"
+		feedChatty "Region Type is not 'Face'"
+		retcode=1
+	fi
+	if [ "$RAU" != 'normalized' ] ; then
+		logechoRed "Error: metadata tag 'Region Area Unit' is not 'normalized'"
+		feedChatty "Region Area Unit is not 'normalized'"
+		retcode=1
+	fi
+
 	if [ -n "$RAX" -a -n "$RAY" ] ; then
 		if [ -z "$(tr -d .[:digit:] <<< $RAX$RAY)" ] ; then
 			feedChatty "Region Area: $RAX,$RAY"
@@ -628,6 +746,15 @@ TestImgMetadata() {
 	else
 		logechoRed "Error: no 'Region Area X/Y' metadata in image"
 		feedChatty 'No Region Area X/Y metadata'
+		retcode=1
+	fi
+
+	# Test we have the basic dimension data
+	if [ -n "$imgWidth" -a -n "$imgHeight" ] ; then
+		feedChatty "Dimensions: $imgWidth x $imgHeight"
+	else
+		logechoRed "Error: missing image width / height metadata in image"
+		feedChatty 'No image dimension metadata'
 		retcode=1
 	fi
 
@@ -823,7 +950,7 @@ BuildMovieClipFromImage() {
 	test $# -eq 2 || { echo 'BAD CALL'; exit 1; }
 	# Start with the metadata extraction & testing. End early if problems
 	showProgress 'Extracting metadata'
-	TestImgMetadata "$1" || return 1
+	GetImgMetadata "$1" "$FaceTag" || return 1
 	# Check if image needs to be rotated. If so, do it, and adjust filepath vars
 	if mustRotateImg ; then
 		S0_RotateImage "$1" || { logechoRed 'Error while rotating!'; return 1; }
@@ -885,9 +1012,6 @@ PrepareSlideshowList() {
 	test $? -eq 0 || { logechoRed  "ERROR: could not write to $list"; exit 1; }
 	test -s "$list" || { logechoRed "Error: no movie clips found in this folder"; exit 1; }
 
-#echo '@@ here is the list'
-#cat $list
-
 	cat << EOM
 The list of $(wc -l < "$list") videos in $sortDesc order is here:
 $list
@@ -928,7 +1052,7 @@ if [ $givenWut = 'file' ] ; then
 	fi
 	if [ $CheckMode = 'true' ] ; then
 		# In Check Mode, just extract & test the image metadata
-		TestImgMetadata "$1" ; rv=$?
+		GetImgMetadata "$1" "$FaceTag"; rv=$?
 		# Only need to print an OK message on success, because fails will get 1+ error messages displayed
 		test $rv -eq 0 && logecho "Metadata scan OK"
 		# Spit out all our chatty messages when in verbose mode
@@ -1007,7 +1131,7 @@ total_items=$( find . -maxdepth 1 -type f -regextype posix-extended -iregex '.*\
 echo $total_items items in this provided folder.
 
 if [ $CheckMode = 'true' ] ; then
-	helper=TestImgMetadata
+	helper=GetImgMetadata
 	sayOnOkFile='Metadata scan OK'	# only need to define the on-OK, because fails will get loads of messages displayed
 	labelTallyOK='images have OK metadata'
 	labelTallyError='images have missing or problematic metadata'
@@ -1021,23 +1145,27 @@ else
 fi
 
 # For Check & Process modes, Iterate through each file in the given folder
-i=0
+itemNum=0
 tallyOK=0
 tallyError=0
 while IFS= read -r -d '' fp
 do
 	# var (re)sets
 	RAX= ; RAY= ; orientation= ; chattyMsg=
-	i=$((i + 1))
-	echo -en "[$i/$total_items]\t$fp\t" | tee -a "$mylog"
+	itemNum=$((itemNum + 1))
+	echo -en "[$itemNum/$total_items]\t$fp\t" | tee -a "$mylog"
 	if ! IsImageFile "$fp" ; then
 		# Only count if this is an image
 		logecho "Skip: not an image"
 	else
 		test $BeVerbose = true && echo # Jump to newline if we are chatty so the messages don't overwrite the name of the file being processed
 		# execute the check/processing on this file
-		$helper "$fp" ; rv=$?
-		if [ $rv -eq 0 ] ; then
+		if [ $CheckMode = 'true' ] ; then
+			GetImgMetadata "$fp" "$FaceTag"
+		else
+			folderBMCFI "$fp"
+		fi
+		if [ $? -eq 0 ] ; then
 			logecho "$sayOnOkFile"
 			tallyOK=$((tallyOK + 1))
 		else
@@ -1047,10 +1175,10 @@ do
 		# Spit out all our chatty messages when in verbose mode
 		test $BeVerbose = true && logecho "$chattyMsg"
 	fi
-done < <(find . -maxdepth 1 -type f -regextype posix-extended -iregex '.*\.(hei[cf]|jpe?g|png|tiff?)$' -printf '%f\0' | sort)
+done < <(find . -maxdepth 1 -type f -regextype posix-extended -iregex '.*\.(hei[cf]|jpe?g|png|tiff?)$' -printf '%f\0') # Can't sort since it's null-terminated
 
 # ------------------------------------------------------------
-# END of Main Line - Folder Portion
+# Final Actions of Main Line - Folder Portion
 # ------------------------------------------------------------
 
 endDT="$(date)"
